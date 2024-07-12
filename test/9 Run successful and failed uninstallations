@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+# ---
+# IMPORTANT: Use the following statement at the TOP OF EVERY TEST SCRIPT
+#            to ensure that this package's 'bin/' subfolder is added to the path so that
+#            this package's CLIs can be invoked by their mere filename in the rest
+#            of the script.
+# ---
+PATH=${PWD%%/test*}/bin:$PATH
+# Test override: Skip the check for an existing n / npm / node installation 
+export N_INSTALL_TEST_OVERRIDE_SKIP_EXISTING_INSTALLATION_TEST=1
+
+# Helper function for error reporting.
+die() { (( $# > 0 )) && echo "ERROR: $*" >&2; exit 1; }
+
+dieNotFound() { echo "ERROR: $descr: not found or not executable in '$tmpDir': '$f'" >&2; exit 1; }
+
+runUninstall() {
+  # Note the INSTALL_N_TEST_OVERRIDE_* override.
+  N_INSTALL_TEST_OVERRIDE_SHELL_INIT_FILE="$tmpInitFile" n-uninstall "$@"
+}
+
+#### !! Must be kept in sync with master copies in 'n-install'.
+kINIT_FILE_LINE_ID=" # Added by n-install (see http://git.io/n-install-repo)." # !! SIC - see comments in n-install
+#### 
+
+# Create a temp. dir.
+tmpDir=$(mktemp -d -t XXXX) || die # Works on both macOS and Linux; note: dir. name will have random extension on macOS (e.g., '.../XXXX.bJViLcM3') and none on Linux (e.g., '.../vXDA')
+tmpPrefixDir="$tmpDir/n"
+tmpInitFile="$tmpDir/initFile"
+
+# Define the shell-init test files to use.
+# NOTE: The *1*-based indices of the arrays must match the `case` handlers below.
+# 1-based indices:           1                                     2                               3                                       4                                        5                                         6
+initFiles=(     ./.fixtures/shellInitFile-ownEntry ./.fixtures/shellInitFile-ownEntry ./.fixtures/shellInitFile-ownEntry ./.fixtures/shellInitFile-multipleOwnEntries ./.fixtures/shellInitFile-noentry     ./.fixtures/shellInitFile-foreignEntry  )
+descriptions=(  'interactive - confirmed'          'interactive - declined'           'own entry'                        'multiple own entries'                       'no own entry'                        'foreign entry'                         )
+
+i=0
+for initFile in "${initFiles[@]}"; do
+  
+  (( ++i )) # start wit index 1
+  descr="${descriptions[i-1]}"
+ 
+  # Create a dummy file and subdirs to test if they get in the way of removing $tmpPrefixDir.
+  mkdir -p "$tmpPrefixDir/dummyDir" || die
+  touch "$tmpPrefixDir/dummyFile" || die
+
+  case $i in
+    1|2|3|4)
+      # Patch the initialization file copy to point N_PREFIX to "$tmpPrefixDir", so that the uninstaller removes the latter.
+      # !! Use "..." quoting, because that's what n-install originally uses, and what n-uninstall expects when extracting the variable value.
+      sed "s#\(N_PREFIX=\)[^;]*;#\1\"${tmpPrefixDir}\";#" "$initFile" > "$tmpInitFile" 
+      diff "$initFile" "$tmpInitFile" >/dev/null && die "TEST DESIGN: $descr: Patching '$tmpInitFile' failed unexpectedly."
+      ;;
+    *) # Nothing to patch by definition.
+      cp "$initFile" "$tmpInitFile" || die
+      ;;
+  esac
+
+  # Run the uninstaller.
+  case $i in
+    1) # simulated *interactive* uninstall - confirmed
+      stdErrOutput=$(runUninstall <<<'y' 2>&1 >/dev/null)
+      ;;
+    2) # simulated *interactive* uninstall - declined
+      stdErrOutput=$(runUninstall <<<'n' 2>&1 >/dev/null)
+      ;;
+    *) # *unattended*
+      export -n N_PREFIX # !! The uninstaller will fall back on an exported N_PREFIX value, if the value can't be found in the init file; thus, we remove the env. variable here.
+      stdErrOutput=$(runUninstall -y 2>&1 >/dev/null)
+      ;;
+  esac
+
+  ec=$?
+
+  epilogue=" Tmp dir: '$tmpDir'; init file '$initFile' -> '$tmpInitFile'; stderr output:"$'\n'"$stdErrOutput"
+
+  case $i in
+    2)  # declined interactive install
+      (( ec != 0 )) || die "$descr: Unexpectedly reported exit code $ec. $epilogue"
+      ;;
+    1|3|4) # init file with expected entry (both confirmed and unattended install): should succeed, remove entry from the init file, and remove "$tmpPrefixDir"
+      (( ec == 0 )) || die "$descr: Unexpectedly reported exit code $ec. $epilogue"
+      fgrep -q "$kINIT_FILE_LINE_ID" "$tmpInitFile" && die "$descr: Init file still contains '$kINIT_FILE_LINE_ID'. $epilogue"
+      [[ ! -e "$tmpPrefixDir" ]] || die "$descr: Prefix dir still exists. $epilogue"
+      ;;
+    5|6) # init files without expected entry: should keep "$tmpPrefixDir" and either report 6, if ~/n is present or 0 (just a warning), if it isn't.  
+      (( ec == 0  || ec == 6 )) || die "$descr: Unexpectedly reported exit code $ec. $epilogue"
+       [[ -e "$tmpPrefixDir" ]] || die "$descr: Prefix dir unexpectedly removed. $epilogue"
+      ;;
+    *)
+      die "TEST-DESIGN ERROR: missing 'case' branch handler."
+      ;;
+  esac
+
+done
+
+rm -rf "$tmpDir"
+
+exit 0
