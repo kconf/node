@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+
+# ---
+# IMPORTANT: Use the following statement at the TOP OF EVERY TEST SCRIPT
+#            to ensure that this package's 'bin/' subfolder is added to the path so that
+#            this package's CLIs can be invoked by their mere filename in the rest
+#            of the script.
+# ---
+PATH=${PWD%%/test*}/bin:$PATH
+# Test override: Skip the check for an existing n / npm / node installation 
+export N_INSTALL_TEST_OVERRIDE_SKIP_EXISTING_INSTALLATION_TEST=1
+
+# Create a temp. dir.
+tmpDir=$(mktemp -d -t XXXX) || die # Works on both macOS and Linux; note: dir. name will have random extension on macOS (e.g., '.../XXXX.bJViLcM3') and none on Linux (e.g., '.../vXDA')
+tmpPrefixDir="$tmpDir/n"
+
+# Helper function for error reporting.
+die() { (( $# > 0 )) && echo "ERROR: $*" >&2; exit 1; }
+
+dieNotFound() { echo "ERROR: $descr: not found or not executable in '$tmpDir': '$f'" >&2; exit 1; }
+dieUnexpectedlyFound() { echo "ERROR: $descr: did not expect to find in '$tmpDir': '$f'" >&2; exit 1; }
+
+runInstall() {
+  # Pass the shell initialization file using INSTALL_N_TEST_OVERRIDE_PREFIX_DIR as an override.
+  N_PREFIX="$tmpPrefixDir" N_INSTALL_TEST_OVERRIDE_SHELL_INIT_FILE="$tmpDir/initFile" n-install "$@"
+}
+
+runUpdate() {
+  N_PREFIX="$tmpPrefixDir" n-update "$@"
+}
+
+#### !! Must be kept in sync with master copies in 'n-install'.
+kTHIS_REPO_URL_LONG='https://github.com/mklement0/n-install' # This script's source repository in LONG form - needed for deriving raw.githubusercontent.com URLs from it.
+#### 
+# Derive the URL and use the *master* branch (not the 'stable' label), so as to use the most recent code in prepraration for a new release.
+# !! By contrast, https://bit.ly/n-install points to https://raw.githubusercontent.com/mklement0/n-install/stable/bin/n-install i.e. the *stable* label.
+url="${kTHIS_REPO_URL_LONG/\/\/github.com\////raw.githubusercontent.com/}/master/bin/n-install"
+
+# ----------- INSTALLATION
+
+for i in {1..6}; do
+  
+  (shopt -s dotglob; rm -rf "$tmpDir"/*)
+
+  descr= ok=0 nodeShouldInstall=0
+  case $i in
+    1) # with invalid simulated user input
+      runInstall <<<'z' && { rm -rf "$tmpDir"; die "Installation succeeded despite invalid simulated user input."; }
+      continue
+      ;;
+    2) # with simulated user input that declines the confirmation prompt
+      runInstall <<<'n' && { rm -rf "$tmpDir"; die "Installation succeeded despite simulated user input that declined the confirmation prompt."; }
+      continue
+      ;;
+    3) # with simulated user input and defaults
+      descr='simulated user input: n + latest node'
+      runInstall <<<$'y' && ok=1
+      nodeShouldInstall=1
+      ;;
+    3) # unattended installation
+      descr='unattended: n + latest node'
+      runInstall -y && ok=1
+      nodeShouldInstall=1
+      ;;
+    4) # unattended installation w/o any Node.js versions
+      descr='unattended: n only'
+      runInstall -y - && ok=1
+      nodeShouldInstall=0
+      ;;
+    5) # unattended installation latest LTS Node.js version.
+      descr='unattended: n + LTS Node.j'
+      runInstall -y lts && ok=1
+      nodeShouldInstall=1
+      ;;
+    6) # unattended installation DIRECTLY FROM GITHUB - !! This may fail if the latest changes have not yet been pushed.
+      descr="unattended: default installation DIRECTLY FROM GITHUB (NOTE: may fail if the latest changes have not yet been pushed with \`make push\`): $url"
+      curl -L "$url" | N_PREFIX="$tmpPrefixDir" N_INSTALL_TEST_OVERRIDE_SHELL_INIT_FILE="$tmpDir/initFile" bash -s -- -y - && ok=1
+      nodeShouldInstall=0
+      ;;
+    *)
+      die "TEST-DESIGN ERROR: missing 'case' branch handler."
+      ;;
+  esac
+
+  (( ok )) || die "Installation failed unexpectedly: $descr; inspect the target dir.: '$tmpDir'"
+
+  # -- 
+  # Spot-check for crucial files and dirs in the local install dir:
+  # --
+
+  # Check for expected presence of n's files and helper scripts
+  f='n/.repo/.git'; [[ -d $tmpPrefixDir/$f ]] || dieNotFound
+  f='bin/n'; [[ -x $tmpPrefixDir/$f ]] || dieNotFound
+
+  # Check for expected presence of helper scripts
+  for f in 'bin/n-update' 'bin/n-uninstall'; do
+    [[ -x $tmpPrefixDir/$f ]] || dieNotFound
+  done
+
+  # Check for expected presence of Node.js executables
+  for f in 'bin/node' 'bin/npm'; do
+    [[ -x $tmpPrefixDir/$f ]] && { if (( ! nodeShouldInstall )); then dieUnexpectedlyFound; fi; } || { if (( nodeShouldInstall )); then dieNotFound; fi; }
+  done
+
+  # --
+
+done
+
+# ----------- UPDATING N
+
+# Note: We assume that "$tmpDir" contains a working installation now.
+
+for i in {1..3}; do
+  case $i in
+    1) # with invalid simulated user input
+      runUpdate <<<'z' && { rm -rf "$tmpDir"; die "n-update succeeded despite invalid simulated user input."; }
+      ;;
+    2) # with simulated user input that declines the confirmation prompt
+      runUpdate <<<'n' && { rm -rf "$tmpDir"; die "n-update succeeded despite simulated user input that declined the confirmation prompt."; }
+      ;;
+    3) # unattended
+      runUpdate -y || { rm -rf "$tmpDir"; die "n-update -y failed unexpectedly."; }
+      ;;
+  esac
+done
+
+rm -rf "$tmpDir"
+
+exit 0
