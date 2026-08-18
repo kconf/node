@@ -1,1 +1,1 @@
-path=($HOME/.npm-global/bin $path)
+path=($HOME/.npm-global/bin $HOME/.bun/bin $path)
